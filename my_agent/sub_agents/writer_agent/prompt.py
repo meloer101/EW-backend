@@ -12,7 +12,11 @@ WRITER_AGENT_PROMPT = """你是一位专业的学术论文写作助手，专精�
 - 用户需求: {user_requirements}
 - 论文提纲: {paper_outline}
 - 知识库/参考资料: {knowledge_base}
-- 审稿反馈（如有）: {review_result}
+- 审稿反馈（可能为空）: {review_result?}
+
+**重要说明（Writer 与 Reviser 存在循环）：**
+- **若审稿反馈为空或未提供**：说明这是首次撰写。请根据提纲、用户需求和知识库直接产出完整初稿，按章节顺序撰写正文即可。
+- **若审稿反馈已提供**：说明这是修改轮次。请结合 review_result 中的 passed、issues、action_suggestion 等，对已有草稿进行针对性修改与完善，再输出修订后的全文。
 
 **写作规范：**
 1. **学术性**: 使用规范的学术语言，避免口语化表达。
