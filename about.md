@@ -15,7 +15,8 @@
 | **入口层** | `my_agent/agent.py` | 导出 `root_agent`（即 scholar_flow_coordinator），供 ADK Runner / Web 调用 |
 | **编排层** | 根协调者 (LlmAgent) | 需求收集、阶段切换、子代理调用顺序与次数约束；用户可见的对话与进度说明 |
 | **配置层** | `config.py` | 统一 LLM 实例（LiteLlm + DeepSeek）、应用常量 |
-| **能力层** | 6 个子代理 | Intake / Knowledge / Planner / Writer / Reviser / Formatter，各司其职，无互相调用 |
+| **能力层** | 7 个子代理 | Intake / Knowledge / Planner / Writer / SectionReviser / GlobalReviser / Formatter，各司其职，无互相调用 |
+| **工具层** | 6 个状态管理函数 | init_writing_phase / set_current_section / save_section_draft / save_section_review / assemble_full_draft / get_writing_progress |
 
 代码结构按「每个子代理一个目录」组织：
 
@@ -29,27 +30,36 @@
 - **子代理之间**：无直接调用；数据依赖全部通过 **父 Session 的 state** 传递（协调者不修改 state，只触发子代理；子代理通过 `output_key` 写入 state，下一环节子代理从 state 读取）。
 
 ```
-                    ┌─────────────────────────┐
-                    │ scholar_flow_coordinator│
-                    │   (LlmAgent + 6 tools)  │
-                    └───────────┬─────────────┘
-                                │
-        ┌───────────────────────┼───────────────────────┐
-        │                       │                       │
-        ▼                       ▼                       ▼
-  intake_agent           knowledge_agent          planner_agent
-  (需求结构化)             (知识/文献整理)            (提纲生成)
-        │                       │                       │
-        └───────────────────────┴───────────────────────┘
-                                │
-                                │  state: user_requirements,
-                                │         paper_outline, knowledge_base
-                                ▼
-  writer_agent  ──►  reviser_agent  ──►  formatter_agent
-  (正文撰写)          (审稿)               (格式化与引用)
-        │                  │                      │
-        │ draft_text       │ review_result        │ final_paper
-        └──────────────────┴──────────────────────┘
+                    ┌──────────────────────────────────────┐
+                    │     scholar_flow_coordinator         │
+                    │  (LlmAgent + 7 AgentTools + 6 Tools) │
+                    └──────────────────┬───────────────────┘
+                                       │
+        ┌──────────────────────────────┼──────────────────────────────┐
+        │                              │                              │
+        ▼                              ▼                              ▼
+  intake_agent               knowledge_agent                planner_agent
+  (需求结构化)                 (知识/文献整理)           (提纲生成 Schema v2)
+        │                              │                              │
+        └──────────────────────────────┴──────────────────────────────┘
+                                       │
+                                       │  state: user_requirements,
+                                       │  paper_outline(v2), knowledge_base
+                                       ▼
+                ┌──────────────────────────────────────────┐
+                │  内循环（按节）:                            │
+                │  writer_agent ──► section_reviser         │
+                │  (按节撰写)        (逐节审稿)               │
+                │  current_section_draft  section_review_result │
+                └──────────────────────┬───────────────────┘
+                                       │
+                                       │  draft_sections → 拼接 → draft_text
+                                       ▼
+                              global_reviser ──► formatter_agent
+                              (全文审稿)          (格式化与引用)
+                                    │                    │
+                                    │ review_result      │ final_paper
+                                    └────────────────────┘
 ```
 
 ---
@@ -66,10 +76,12 @@
    - 依次调用：`intake_agent`（可选，将需求结构化）→ `knowledge_agent`（文献/理论整理，可无提纲首轮）→ `planner_agent`（生成提纲）。  
    - 设计上 Knowledge 与 Planner 可多轮交替（提纲 ↔ 知识）；当前实现由协调者按 prompt 顺序与用户确认提纲后进入阶段三。
 
-3. **阶段三：写作与审稿**  
-   - **单次撰写**：调用一次 `writer_agent`，要求其单次输出**整篇**正文，结果写入 `draft_text`。  
-   - **单次审稿**：调用一次 `reviser_agent`，读 `draft_text` + `user_requirements` + `paper_outline`，输出 JSON 审稿结果写入 `review_result`。  
-   - **修订循环**：若未通过（rewrite/revise），最多 3 轮：每轮仅再调用一次 `writer_agent`（部分修改或全文润色/重写，仍输出整篇）→ 再调用一次 `reviser_agent`。  
+3. **阶段三：按节写作与两阶段审稿**  
+   - **初始化**：调用 `init_writing_phase` 工具初始化 draft_sections 并获取叶子节写作顺序。  
+   - **内循环（按节）**：对每个叶子节按顺序执行：`set_current_section` → `writer_agent`（按节撰写）→ `save_section_draft` → `section_reviser`（逐节审稿）→ `save_section_review`；若未通过可重试，单节最多 3 次尝试。  
+   - **拼接全文**：所有节通过后调用 `assemble_full_draft` 拼接 `draft_text`。  
+   - **全文审稿**：调用 `global_reviser` 对完整草稿进行全文审查，输出 `review_result`。  
+   - **修订处理**：若未通过——特定段落不通过则按 section_id 定点回调 Writer 重写；全文不通过则全文重写。最多 3 轮全文审稿。  
    - 通过后进入阶段四。
 
 4. **阶段四：格式化与交付**  
@@ -78,7 +90,7 @@
 
 关键约束（由 prompt 硬性规定）：  
 - 工具参数仅允许一句短指令，禁止在参数中传长文；所有长内容依赖 state。  
-- 阶段三每轮只允许一次 writer、一次 reviser，避免多次 writer 导致 `draft_text` 被片段覆盖。
+- 阶段三按节写作时，每个节的标准流程为：set_current_section → writer_agent → save_section_draft → section_reviser → save_section_review；状态管理工具确保 draft_sections 正确累积。
 
 ---
 
@@ -93,7 +105,7 @@
 ### 3.2 State 注入方式
 
 - 子代理 instruction 中通过 **占位符** 注入 session state：`{key}` 为必填（缺失会报错），`{key?}` 为可选（缺失时注入空或占位）。  
-- 当前使用的 key：`user_requirements`、`paper_outline`、`knowledge_base`、`draft_text`、`review_result`、`final_paper`；其中 `paper_outline?`（knowledge_agent）、`review_result?`（writer_agent）、`draft_text?`（writer_agent 修订轮）为可选，以支持「首轮无提纲 / 首轮无审稿 / 修订时才有上一稿」等语义。
+- 当前使用的 key：`user_requirements`、`paper_outline`（Schema v2）、`knowledge_base`、`current_section_id`、`current_section_draft`、`section_review_result`、`draft_sections`、`draft_text`、`review_result`、`final_paper`；其中带 `?` 后缀的为可选注入。
 
 ### 3.3 Schema 与输出格式
 
@@ -126,7 +138,7 @@ PRD 建议的 State Schema（config / knowledge / artifact / control 四层、ou
 - **第一阶段升级计划**：提纲扁平化（Schema v2）、Writer 升级为 Section 级撰写、Reviser 拆分为 SectionReviser + GlobalReviser（双代理两阶段审稿）的完整方案见 **[docs/phase1-upgrade-plan.md](docs/phase1-upgrade-plan.md)**。包括：Schema 定义（扁平 sections + 论文级字段）、流程重构、State 形状、各代理改造详情与实施步骤。
 - **主键稳定性（技术债）**：当前/短期可用编号（"1","2.1"）既作 section 身份又作展示顺序；用户插入/调序/合并会导致重排编号、主键变化，进而影响版本、审稿引用、日志。长期应拆为**稳定 id**（如 UUID）+ **display_number**（可变），仅编号随结构变。
 - **status 职责**：理想做法是 planner 只产出结构设计，**status 由协调层在进入写作阶段时初始化**；v1 可为实现便利允许 planner 预填 "pending"。
-- **下一架构转折点**：当前 Writer 仍**单次输出整篇**、Reviser 为单代理；第一阶段升级后将实现 **Section 级撰写（Writer 按节产出）** + **双代理审稿（SectionReviser 逐节审 + GlobalReviser 全文审）**，届时可操作 outline 与 section status 的价值才会完全发挥。
+- **已完成的架构转折**：第一阶段升级已实施——Writer 改为 **Section 级撰写**（按节产出，output_key=current_section_draft）；原 Reviser 拆分为 **SectionReviser（逐节审）** + **GlobalReviser（全文审）** 两个独立代理；新增 6 个状态管理函数工具（FunctionTool）驱动 draft_sections 的累积、拼接与 section status 流转；协调层阶段三重构为「按节循环写+审 → 拼接全文 → 全文审 → 按需修订」。
 
 ---
 
@@ -137,10 +149,12 @@ PRD 建议的 State Schema（config / knowledge / artifact / control 四层、ou
 | 根协调者 | `agent.py` + `prompt.py` | 四阶段编排、子代理调用约束、用户进度说明、阶段四全文交付 |
 | IntakeAgent | `sub_agents/intake_agent/` | 需求澄清与结构化（目标 JSON：topic、discipline、word_count、citation_style 等） |
 | KnowledgeAgent | `sub_agents/knowledge_agent/` | 按主题/提纲整理理论与文献建议；支持无提纲首轮与有提纲迭代 |
-| PlannerAgent | `sub_agents/planner_agent/` | 根据需求与知识库生成论文提纲（标题树 + 字数分配） |
-| WriterAgent | `sub_agents/writer_agent/` | 单次输出整篇正文；修订轮支持部分修改或全文润色/重写，仍输出整篇 |
-| ReviserAgent | `sub_agents/reviser_agent/` | 六维度审稿，输出 JSON（passed、score、issues、action_suggestion） |
+| PlannerAgent | `sub_agents/planner_agent/` | 根据需求与知识库生成论文提纲（Schema v2：扁平 sections + 论文级字段） |
+| WriterAgent | `sub_agents/writer_agent/` | 按节撰写正文（Section 级），每次输出一个 section，写入 current_section_draft |
+| SectionReviser | `sub_agents/section_reviser/` | 逐节审稿（五维度），输出节级 JSON（passed、score、issues、action_suggestion） |
+| GlobalReviser | `sub_agents/global_reviser/` | 全文审稿（七维度），输出全文 JSON，issues 含 section_id 以支持定点修订 |
 | FormatterAgent | `sub_agents/formatter_agent/` | 引用替换、参考文献列表、按用户要求的引用格式输出最终 Markdown |
+| 状态管理工具 | `tools.py` | init_writing_phase / set_current_section / save_section_draft / save_section_review / assemble_full_draft / get_writing_progress |
 | 配置 | `config.py` | LiteLlm 模型实例、APP_NAME；`.env` 提供 LLM_MODEL / API_KEY / BASE_URL |
 
 未实现（PRD 标注为后续）：RAG/向量检索、完整 CitationAgent、并发调度、独立前端、规则 DSL、按节并行写作、审稿策略自动化。

@@ -401,4 +401,178 @@ tools=[
 
 ---
 
-*文档版本：v1。本文档作为第一阶段升级的统一参考；实施过程中若有调整，请同步更新本文档与 about.md。*
+## 十、第二阶段架构升级：显式状态机 + 工作流代理
+
+### 10.1 升级背景
+
+第一阶段实现了按节写作和双审稿代理，但协调层仍由 LLM 根据自然语言 instruction 自行决策每个工具调用。这种方式在原型阶段有效，但存在以下局限：
+
+1. **可预测性不足**：LLM 的决策受 prompt 影响，可能跳过步骤或顺序错乱
+2. **可观测性差**：难以追踪具体哪个步骤耗时、失败或产生问题
+3. **调试困难**：状态隐式流转，缺少明确的阶段标记和契约
+4. **扩展成本高**：新增流程需要修改长 prompt，容易引入副作用
+
+面向商用 SaaS 的需求，第二阶段采用**显式状态机 + 工作流代理驱动**的架构，提升系统的鲁棒性、可维护性和可观测性。
+
+### 10.2 核心改进
+
+#### 改进 1：协调者职责收缩
+
+**之前**：协调者 LLM 负责对话 + 微观调度每个工具调用（set_current_section → writer → save → reviser → save...）
+
+**现在**：协调者只负责：
+- **对话职责**：理解用户需求、确认关键决策、报告进度
+- **阶段切换**：判断当前阶段（intake / planning / writing / global_review / formatting），调用对应的工作流代理或独立子代理
+
+工作流内部的固定流程由 **LoopAgent** 或 **SequentialAgent** 自动驱动，无需 LLM 逐步选工具。
+
+#### 改进 2：显式状态机
+
+引入 `session.state["phase"]` 字段标记当前阶段：
+- `"intake"`: 需求收集
+- `"planning"`: 规划阶段
+- `"writing"`: 写作阶段
+- `"global_review"`: 全文审稿
+- `"formatting"`: 格式化
+
+配套的阶段管理工具：
+- `init_planning_phase()`: 初始化规划状态
+- `init_writing_phase()`: 初始化写作状态（提取叶子节、设置顺序）
+- `get_phase_status()`: 查询当前阶段和进度
+- `set_phase(phase_name)`: 显式设置阶段
+
+#### 改进 3：工作流代理（Workflow Agents）
+
+新增两个 **LoopAgent** 工作流：
+
+**1. planning_pipeline（规划流水线）**
+- 内部子代理：`[knowledge_agent, planner_agent, outline_completion_checker]`
+- 循环逻辑：
+  1. knowledge_agent 收集文献和理论
+  2. planner_agent 生成/优化提纲
+  3. outline_completion_checker 检查完整性（≥3 个叶子节、字数≥1000、必需字段完整）
+  4. 若未完整，继续循环；若完整，escalate 退出
+- 最大迭代：5 轮
+
+**2. writing_pipeline（写作流水线）**
+- 内部子代理：`[writer_agent, section_reviser, section_pass_checker, section_storage_agent]`
+- 循环逻辑：
+  1. writer_agent 撰写当前节（从 state 读取 current_section_id）
+  2. section_reviser 审稿当前节
+  3. section_pass_checker 检查审稿结果：
+     - 若通过：移动到下一节（更新 current_section_id 和 section_index）
+     - 若未通过：保持当前节不变（writer 会在下轮读取 section_review_result 并修订）
+  4. section_storage_agent 存储通过审核的节草稿
+  5. 循环直到所有叶子节完成（section_pass_checker 检测到全部完成后 escalate）
+- 最大迭代：100 轮（应对多节 + 多次修订）
+
+#### 改进 4：自定义流控代理
+
+新增三个 `BaseAgent` 子类用于流控和状态管理：
+
+**1. OutlineCompletionChecker**
+- 职责：检查 paper_outline 完整性
+- 逻辑：
+  - 若 outline 包含 ≥3 个叶子节、total_word_count ≥1000、必需字段完整 → escalate 退出循环
+  - 否则 → 继续循环（knowledge_agent 会补充信息）
+
+**2. SectionPassChecker**
+- 职责：检查当前节审稿结果并控制写作循环
+- 逻辑：
+  - 读取 section_review_result，判断 passed
+  - 若通过：移动到下一节（section_index++, current_section_id = section_order[index]）
+  - 若未通过：保持 current_section_id 不变
+  - 若所有节完成：escalate 退出循环
+
+**3. SectionStorageAgent**
+- 职责：累积通过审核的节草稿
+- 逻辑：
+  - 读取 current_section_id 和 current_section_draft
+  - 保存到 draft_sections[section_id]
+  - 更新 sections[section_id].status = "section_passed"
+  - 若所有叶子节完成，拼接全文 draft_text
+
+#### 改进 5：可观测性与契约
+
+- **输入输出明确**：每个阶段/子代理的输入（从 state 读取哪些字段）、输出（写入哪些字段）、前置条件、后置条件都在 prompt 或代码中显式定义
+- **日志打点**：自定义流控代理内置日志记录（步骤名、section_id、进度），便于监控和排查
+- **状态可查询**：get_phase_status() 工具可随时查询当前阶段、进度、已完成项
+
+### 10.3 架构对比
+
+| 维度 | 第一阶段 | 第二阶段 |
+|-----|---------|---------|
+| **协调方式** | LLM 根据 prompt 自行决策每个工具调用 | LLM 只负责对话+阶段切换，内部流程由 LoopAgent 驱动 |
+| **状态管理** | 隐式（通过 state 字段，协调者自行判断） | 显式（session.state["phase"] + 阶段管理工具） |
+| **流控机制** | 协调者 prompt 描述步骤顺序 | 自定义 BaseAgent 子类（OutlineCompletionChecker / SectionPassChecker） |
+| **可观测性** | 低（需要解析 LLM 输出和工具调用记录） | 高（日志打点、状态可查询、阶段明确） |
+| **扩展成本** | 高（修改长 prompt，容易引入副作用） | 低（新增工作流或流控代理，接口清晰） |
+| **子代理数量** | 7 个独立代理 + 6 个状态工具 | 5 个独立代理 + 2 个工作流代理 + 3 个流控代理 + 4 个阶段工具 |
+
+### 10.4 新增模块清单
+
+#### 新增文件
+
+1. **my_agent/workflow_agents/__init__.py**：工作流代理模块导出
+2. **my_agent/workflow_agents/outline_completion_checker.py**：大纲完整性检查
+3. **my_agent/workflow_agents/section_pass_checker.py**：节审稿结果检查
+4. **my_agent/workflow_agents/pipelines.py**：planning_pipeline 和 writing_pipeline 定义
+5. **my_agent/sub_agents/section_storage/__init__.py**：存储代理模块导出
+6. **my_agent/sub_agents/section_storage/agent.py**：SectionStorageAgent 定义
+7. **my_agent/phase_tools.py**：阶段管理工具函数（init_planning_phase / init_writing_phase / get_phase_status / set_phase）
+
+#### 修改文件
+
+1. **my_agent/agent.py**：
+   - 更新导入：移除独立子代理（knowledge / planner / writer / section_reviser），改为工作流代理（planning_pipeline / writing_pipeline）
+   - 更新 tools 列表：3 个独立代理 + 2 个工作流代理 + 4 个阶段管理工具
+   - 更新 description 和架构描述
+
+2. **my_agent/prompt.py**：
+   - 完全重写协调者 prompt，职责改为对话+阶段切换
+   - 简化工具调用规则（工作流代理只需简短指令）
+   - 移除微观步骤描述（由工作流内部自动执行）
+
+3. **my_agent/tools.py**：
+   - 保留（原状态管理工具仍在使用，但逐步迁移到 phase_tools.py）
+
+### 10.5 实施后的工作流
+
+**完整流程（用户视角）：**
+
+1. **Intake 阶段**：协调者与用户对话，收集需求 → 调用 `intake_agent` 结构化
+2. **Planning 阶段**：
+   - 调用 `init_planning_phase()` 初始化
+   - 调用 `planning_pipeline` 工作流（内部自动循环：knowledge → planner → checker）
+   - 协调者展示提纲，等待用户确认
+3. **Writing 阶段**：
+   - 调用 `init_writing_phase()` 初始化（提取叶子节、设置顺序）
+   - 调用 `writing_pipeline` 工作流（内部自动循环：writer → reviser → checker → storage）
+   - 协调者报告写作完成
+4. **Global Review 阶段**：
+   - 调用 `set_phase("global_review")`
+   - 调用 `global_reviser` 审稿
+   - 根据审稿结果决定：通过 → 格式化；特定节不通过 → 调用 `writing_pipeline` 修订；全文不通过 → 重新写作
+5. **Formatting 阶段**：
+   - 调用 `set_phase("formatting")`
+   - 调用 `formatter_agent`
+   - 协调者向用户展示完整论文
+
+### 10.6 技术亮点
+
+1. **参考 deep-search 案例**：借鉴 ADK 官方 deep-search 示例的 LoopAgent + 自定义 BaseAgent（如 EscalationChecker）模式
+2. **状态机模式**：显式 phase 字段 + 阶段管理工具，实现可预测、可测试的流转
+3. **关注点分离**：协调者（对话）、工作流（固定流程）、流控代理（条件判断）职责清晰
+4. **可扩展性**：新增阶段只需创建新的工作流代理，无需修改协调者 prompt
+
+### 10.7 后续优化方向
+
+1. **限流与重试**：为工作流代理添加超时、限流、重试逻辑
+2. **日志与监控**：集成 OpenTelemetry 或类似工具，记录每个代理的耗时、成本、成功率
+3. **状态持久化**：将 phase 和关键状态持久化到数据库，支持断点续传
+4. **A/B 测试**：通过配置切换不同工作流实现，对比效果
+5. **用户干预点**：在关键节点（如提纲确认、写作完成）主动询问用户，而非自动推进
+
+---
+
+*文档版本：v2（新增第二阶段架构升级）。本文档作为第一和第二阶段升级的统一参考；实施过程中若有调整，请同步更新本文档与 about.md。*

@@ -4,7 +4,8 @@ from .intake_agent.agent import intake_agent
 from .planner_agent.agent import planner_agent
 from .knowledge_agent.agent import knowledge_agent
 from .writer_agent.agent import writer_agent
-from .reviser_agent.agent import reviser_agent
+from .section_reviser.agent import section_reviser
+from .global_reviser.agent import global_reviser
 from .formatter_agent.agent import formatter_agent
 
 __all__ = [
@@ -12,6 +13,7 @@ __all__ = [
     "planner_agent",
     "knowledge_agent",
     "writer_agent",
-    "reviser_agent",
+    "section_reviser",
+    "global_reviser",
     "formatter_agent",
 ]
