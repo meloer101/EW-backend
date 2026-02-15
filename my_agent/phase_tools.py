@@ -19,6 +19,75 @@ def _sort_key(display_number: str) -> list[int]:
     return result
 
 
+def ensure_writing_phase_state(state: dict) -> dict:
+    """根据 paper_outline 确保写作阶段状态已初始化（section_order、current_section_id 等）。
+
+    将提纲中的第一节（按 display_number 排序后的第一个叶子节）设为 current_section_id，
+    供 writing_pipeline 第一次进入循环时 writer 使用。幂等：若已初始化则仅返回成功。
+
+    可直接被 init_writing_phase 工具和 WritingPhaseInitializer 代理共用。
+
+    Args:
+        state: session.state 或等效的 dict。
+
+    Returns:
+        {"status": "success"|"error", "message": str, "section_order": list|None}
+    """
+    if state.get("section_order") and state.get("current_section_id"):
+        return {
+            "status": "success",
+            "message": "Writing phase already initialized.",
+            "section_order": state["section_order"],
+        }
+
+    outline_raw = state.get("paper_outline", "")
+    outline = outline_raw
+    if isinstance(outline_raw, str):
+        try:
+            outline = json.loads(outline_raw)
+        except (json.JSONDecodeError, TypeError):
+            return {"status": "error", "message": "Failed to parse paper_outline.", "section_order": None}
+
+    sections = outline.get("sections", {})
+    if not sections:
+        return {"status": "error", "message": "No sections found in paper_outline.", "section_order": None}
+
+    leaf_sections = [
+        (sid, sec.get("display_number", sid))
+        for sid, sec in sections.items()
+        if sec.get("word_count", 0) > 0
+    ]
+    leaf_sections.sort(key=lambda x: _sort_key(x[1]))
+    section_order = [sid for sid, _ in leaf_sections]
+
+    if not section_order:
+        return {
+            "status": "error",
+            "message": "No leaf sections (word_count > 0) found in outline.",
+            "section_order": None,
+        }
+
+    state["phase"] = "writing"
+    state["section_order"] = section_order
+    state["section_index"] = 0
+    state["current_section_id"] = section_order[0]
+    state["draft_sections"] = state.get("draft_sections") or {}
+    state["current_section_draft"] = ""
+    state["section_review_result"] = ""
+    state["all_sections_complete"] = False
+
+    for sid in section_order:
+        sections[sid]["status"] = "pending"
+    outline["sections"] = sections
+    state["paper_outline"] = outline
+
+    return {
+        "status": "success",
+        "message": f"Writing phase initialized with {len(section_order)} sections; current_section_id={section_order[0]}.",
+        "section_order": section_order,
+    }
+
+
 def init_planning_phase(tool_context: ToolContext) -> dict:
     """初始化规划阶段状态。
     
@@ -41,72 +110,15 @@ def init_planning_phase(tool_context: ToolContext) -> dict:
 
 def init_writing_phase(tool_context: ToolContext) -> dict:
     """初始化写作阶段状态。
-    
+
     从 paper_outline 中提取叶子节，按 display_number 排序，
-    设置 phase = "writing"，初始化 section_order 和 section_index。
-    
+    将提纲第一节设为 current_section_id，并初始化 section_order、section_index 等。
+    内部调用 ensure_writing_phase_state，与 writing_pipeline 内初始化逻辑一致。
+
     Returns:
         状态描述字典，包含要写作的节列表。
     """
-    state = tool_context.state
-    
-    # 解析 outline
-    outline_raw = state.get("paper_outline", "")
-    outline = outline_raw
-    if isinstance(outline_raw, str):
-        try:
-            outline = json.loads(outline_raw)
-        except (json.JSONDecodeError, TypeError):
-            return {
-                "status": "error",
-                "message": "Failed to parse paper_outline.",
-            }
-    
-    sections = outline.get("sections", {})
-    if not sections:
-        return {
-            "status": "error",
-            "message": "No sections found in paper_outline.",
-        }
-    
-    # 提取叶子节（word_count > 0）
-    leaf_sections = [
-        (sid, sec.get("display_number", sid))
-        for sid, sec in sections.items()
-        if sec.get("word_count", 0) > 0
-    ]
-    
-    # 按 display_number 排序
-    leaf_sections.sort(key=lambda x: _sort_key(x[1]))
-    section_order = [sid for sid, _ in leaf_sections]
-    
-    if not section_order:
-        return {
-            "status": "error",
-            "message": "No leaf sections (word_count > 0) found in outline.",
-        }
-    
-    # 设置写作状态
-    state["phase"] = "writing"
-    state["section_order"] = section_order
-    state["section_index"] = 0
-    state["current_section_id"] = section_order[0]
-    state["draft_sections"] = {}
-    state["current_section_draft"] = ""
-    state["section_review_result"] = ""
-    state["all_sections_complete"] = False
-    
-    # 将所有节状态重置为 pending
-    for sid in section_order:
-        sections[sid]["status"] = "pending"
-    outline["sections"] = sections
-    state["paper_outline"] = outline
-    
-    return {
-        "status": "success",
-        "message": f"Writing phase initialized. {len(section_order)} sections to write.",
-        "section_order": section_order,
-    }
+    return ensure_writing_phase_state(tool_context.state)
 
 
 def get_phase_status(tool_context: ToolContext) -> dict:
