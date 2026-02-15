@@ -13,7 +13,6 @@ draft.jpg
 
 **产品定位（简短）**：面向文科学生的学术写作助手，用户可给出模糊目标（如“帮我写一篇关于人类学的论文”），系统通过多轮澄清 + 结构化规划 + 检索支撑 + 分段写作 + 引用格式化 + 审查，最终生成符合用户要求的论文。
 
-
 **不在首轮范围**（后续迭代）：完善 KnowledgeAgent（RAG）、CitationAgent（完整格式化）、并发调度、前端 UI、复杂规则 DSL、并行章节写作、完整审稿策略自动化。
 
 ---
@@ -23,16 +22,20 @@ draft.jpg
 为保证后续可维护、可扩展，Cursor 必须严格遵守以下契约：
 
 1. **Agent 接口契约（必需）**：每个 Agent 接受 `InvocationContext` 与 `session.state`，只输出结构化的 **StatePatch**（JSON），绝不直接写入 Global State。
-
-   * StatePatch 格式示例：
+   - StatePatch 格式示例：
 
      ```json
      {
        "layer": "artifact",
-       "patch": { "sections": {"2.1": "生成的文本..."} },
-       "meta": {"agent": "WriterAgent", "task_id": "section_2.1", "success": true}
+       "patch": { "sections": { "2.1": "生成的文本..." } },
+       "meta": {
+         "agent": "WriterAgent",
+         "task_id": "section_2.1",
+         "success": true
+       }
      }
      ```
+
 2. **State 管理契约**：项目必须实现 State Manager，负责：合并 patch、快照存储、回滚、dirty flags、日志（谁写的、何时、依据哪个 task）
 3. **Task Tree 契约**：任务是可序列化的对象（task.id、parent、dependencies、status、output_keys）。Task 状态变化触发规则。
 4. **Rule Engine 契约**：规则为 declarative（JSON）或极简 DSL，Orchestrator 只调用规则引擎，不含判断分支逻辑。
@@ -66,21 +69,21 @@ draft.jpg
     "citation_style": "APA"
   },
   "knowledge": {
-    "references": [],           // [{id, title, authors, year, url, snippet}]
+    "references": [], // [{id, title, authors, year, url, snippet}]
     "vector_index_meta": {}
   },
   "artifact": {
     "outline": {
       "version": 1,
       "tree": {
-        "1": {"title": "引言", "children": []},
-        "2": {"title": "文献综述", "children": ["2.1","2.2"]},
-        "2.1": {"title": "早期研究", "children": []}
+        "1": { "title": "引言", "children": [] },
+        "2": { "title": "文献综述", "children": ["2.1", "2.2"] },
+        "2.1": { "title": "早期研究", "children": [] }
       }
     },
     "sections": {
-      "1": {"text": null, "status": "pending"},
-      "2.1": {"text": null, "status": "pending"}
+      "1": { "text": null, "status": "pending" },
+      "2.1": { "text": null, "status": "pending" }
     },
     "final_text": null
   },
@@ -133,10 +136,10 @@ Rules expressed as JSON array: each rule:
 
 首轮包含规则：
 
-* 当 outline empty -> create planner_task（可以由 Writer 用简化 prompt 生成 outline）
-* 当 section task pending & dependencies done -> activate writer_agent for that section
-* 当 writer_agent outputs section -> activate reviser_agent for that section
-* 当 reviser_agent returns score < threshold -> spawn rewrite task (writer) or planner_task depending issue_type
+- 当 outline empty -> create planner_task（可以由 Writer 用简化 prompt 生成 outline）
+- 当 section task pending & dependencies done -> activate writer_agent for that section
+- 当 writer_agent outputs section -> activate reviser_agent for that section
+- 当 reviser_agent returns score < threshold -> spawn rewrite task (writer) or planner_task depending issue_type
 
 Rule Engine implementation must be simple: pattern check on state keys (dotpath) and boolean/assert comparisons.
 
@@ -146,18 +149,18 @@ Rule Engine implementation must be simple: pattern check on state keys (dotpath)
 
 ### 1) `base_agent.py`
 
-* 必须包含声明字段：
+- 必须包含声明字段：
+  - `requires_state_keys: List[str]`
+  - `produces_state_keys: List[str]`
+  - `name` 与 `description`
 
-  * `requires_state_keys: List[str]`
-  * `produces_state_keys: List[str]`
-  * `name` 与 `description`
-* `run_async(ctx)` 调用 litellm_client.complete(...) 并返回 StatePatch dict.
+- `run_async(ctx)` 调用 litellm_client.complete(...) 并返回 StatePatch dict.
 
 ### 2) `writer_agent.py`（职责）
 
-* **输入（requires）**：`artifact.outline.tree`, `artifact.sections[section_id] (meta)`, `config.topic`, `knowledge.references`（可空）
-* **行为**：按 section 的 outline 写出段落文本；在文本里用 `[[REF:<ref_id>]]` 占位引用。
-* **输出（patch）**：`artifact.sections.<section_id>.text`, `artifact.sections.<section_id>.status = "succeeded"` 或 error meta。
+- **输入（requires）**：`artifact.outline.tree`, `artifact.sections[section_id] (meta)`, `config.topic`, `knowledge.references`（可空）
+- **行为**：按 section 的 outline 写出段落文本；在文本里用 `[[REF:<ref_id>]]` 占位引用。
+- **输出（patch）**：`artifact.sections.<section_id>.text`, `artifact.sections.<section_id>.status = "succeeded"` 或 error meta。
 
 **Writer Prompt（prompt/writer_prompt.txt）**（示例要精准）：
 
@@ -173,9 +176,9 @@ Rule Engine implementation must be simple: pattern check on state keys (dotpath)
 
 ### 3) `reviser_agent.py`（职责）
 
-* **输入（requires）**：`artifact.sections.<section_id>.text`, `config` constraints
-* **行为**：对段落做规则检查 + LLM 打分，分类问题类型（evidence_insufficient / structure_problem / wording_issue / length_issue）
-* **输出（patch）**：`control.review_scores[section_id]`, `control.review_issues[section_id]`，并带 `action_suggestion`（"rewrite"/"ask_user"/"ok"）
+- **输入（requires）**：`artifact.sections.<section_id>.text`, `config` constraints
+- **行为**：对段落做规则检查 + LLM 打分，分类问题类型（evidence_insufficient / structure_problem / wording_issue / length_issue）
+- **输出（patch）**：`control.review_scores[section_id]`, `control.review_issues[section_id]`，并带 `action_suggestion`（"rewrite"/"ask_user"/"ok"）
 
 **Reviser Prompt（prompts/reviser_prompt.txt）**（示例）：
 
@@ -206,15 +209,124 @@ LLM_BASE_URL=https://api.deepseek.com
 
 **litellm_client.py** 提供：
 
-* `completion(messages, model, temperature)` -> returns text or structured response
-* `chat_with_messages(messages)` wrapper
+- `completion(messages, model, temperature)` -> returns text or structured response
+- `chat_with_messages(messages)` wrapper
   封装好异常重试（指数退避），并记录 tokens if possible.
 
 ADK:
 
-* 使用 `Agent` 或 `BaseAgent` 按 ADK 样例创建 Agent 实例，但遵守我们 Agent 接口契约（返回 StatePatch，而 ADK 的 event stream 可以传回 patch）
+- 使用 `Agent` 或 `BaseAgent` 按 ADK 样例创建 Agent 实例，但遵守我们 Agent 接口契约（返回 StatePatch，而 ADK 的 event stream 可以传回 patch）
 
 参考 ADK 文档（adk.wiki）中关于 multi-agent / parent-child 的示例实现方式。
 
 ---
 
+## 九、第一阶段升级目标
+
+我们不要推翻重来。
+
+我们做渐进式进化。
+
+第一步：结构化 Artifact（最优先）
+
+现在把：
+
+draft_text
+
+升级为：
+
+artifact = {
+outline: {...},
+sections: [
+{ id, title, word_target, content, status }
+],
+meta: {
+total_word_count,
+citation_style
+}
+}
+
+Writer 不再写整篇。
+
+Writer 写：
+
+某个 section_id。
+
+Reviser 不再审全文。
+
+Reviser 审：
+
+section 级 + 全局一致性。
+
+Formatter 汇总 sections。
+
+这一改动带来的收益巨大：
+
+支持按节修改
+
+支持并行
+
+支持精细控制
+
+降低上下文长度
+
+解决长文本截断
+
+这是你从实验级走向工程级的第一步。
+
+第二步：把“流程”从 Prompt 里抽出来
+
+你现在的阶段控制在：
+
+instruction 里。
+
+我们要做的是：
+
+让代码控制阶段。
+
+例如：
+
+if not state.user_requirements:
+call intake
+elif not state.paper_outline:
+call planner
+elif not state.draft_ready:
+call writer
+...
+
+也就是说：
+
+协调者不再“决定做什么”。
+
+协调者只负责对话。
+
+真正的 orchestrator 变成代码。
+
+这样你可以：
+
+单元测试每个阶段
+
+强制循环次数
+
+防止乱调用
+
+做 deterministic control
+
+这是系统稳定性的本质提升。
+
+第三步：引入硬 Schema 校验
+
+Reviser 的 JSON 必须用：
+
+Pydantic / JSON schema response format
+
+不要靠 prompt 约定。
+
+否则某一天模型多输出一句话，你的系统就断了。
+
+LLM 输出必须：
+
+machine-readable first
+human-readable second
+
+这是工程铁律。
