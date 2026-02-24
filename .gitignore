@@ -1,0 +1,6 @@
+my_agent/.adk/session.db
+
+__pycache__/
+*.pyc
+*.db
+.venv/
