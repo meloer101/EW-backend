@@ -52,7 +52,8 @@ class WritingPhaseInitializer(BaseAgent):
     - section_order: list[str]，按 display_number 排序的节 ID 列表
     - current_section_idx: int，当前写作节的索引（从 0 开始）
     - current_section_id: str，当前节 ID
-    - draft_sections: dict，存放已写节正文（初始为空 dict，幂等）
+    - draft_sections: dict，始终初始化为空（每次调用都清空，防止旧内容污染）
+    - section_retry_counts: dict，各节审稿重试计数（始终从零开始）
     """
 
     async def _run_async_impl(
@@ -90,20 +91,18 @@ class WritingPhaseInitializer(BaseAgent):
         # 按节编号升序排列（支持多级编号如 2.1 < 2.2 < 3）
         section_order = sorted(sections.keys(), key=_section_sort_key)
 
-        # 幂等地初始化写作状态
+        # 初始化写作状态（每次调用始终重置，确保干净起点，防止旧内容污染新一轮写作）
         state["section_order"] = section_order
         state["current_section_idx"] = 0
         state["current_section_id"] = section_order[0] if section_order else None
-        # draft_sections 若已有内容则保留（幂等），否则初始化为空
-        if "draft_sections" not in state or not isinstance(
-            state.get("draft_sections"), dict
-        ):
-            state["draft_sections"] = {}
+        state["draft_sections"] = {}         # 始终清空，避免上次运行的旧章节混入
+        state["section_retry_counts"] = {}   # 重置每节的审稿重试计数
 
         # 清除上一轮遗留的节级状态
         state.pop("section_review", None)
         state.pop("current_section_draft", None)
         state.pop("compressed_context", None)
+        state.pop("sections_to_rewrite", None)  # 清除可能残留的局部重写标记
 
         logger.info(
             "[WritingPhaseInitializer] 初始化完成：共 %d 节，从 '%s' 开始。顺序: %s",

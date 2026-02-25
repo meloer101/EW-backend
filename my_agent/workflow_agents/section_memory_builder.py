@@ -105,6 +105,12 @@ class SectionMemoryBuilder(BaseAgent):
             or metadata.get("writing_style", "formal")
         )
 
+        # 判断当前节是否为父节（提纲中存在以其编号为前缀的子节，如 "2" 存在 "2.1"）
+        section_prefix = current_section_id + "."
+        has_sub_sections = any(
+            sid.startswith(section_prefix) for sid in sections.keys()
+        )
+
         current_section_spec = {
             "section_id": current_section_id,
             "display_number": display_number,
@@ -114,6 +120,7 @@ class SectionMemoryBuilder(BaseAgent):
             "required_arguments": current_section.get("required_arguments", []),
             "required_evidence": current_section.get("required_evidence", []),
             "tone": tone,
+            "has_sub_sections": has_sub_sections,  # 父节标记，供 Writer/Reviser 参考
         }
 
         compressed_context: dict = {

@@ -1,0 +1,2 @@
+# 邮件发送功能（email_agent）依赖
+agentmail>=0.1.0

@@ -20,6 +20,7 @@ compressed_context.current_section_spec 包含：
 - length_budget: 本节字数预算
 - required_arguments: 本节必须覆盖的论证点列表
 - tone: 语气风格要求
+- **has_sub_sections**: (boolean) 当前节是否拥有子节（如 "2" 有 "2.1"、"2.2"）
 
 **审查维度：**
 1. **目标达成度(goal_fulfillment)**: 草稿是否完整实现了 section_goal 描述的目标？
@@ -27,7 +28,8 @@ compressed_context.current_section_spec 包含：
 3. **篇幅适当性(length_adequacy)**: 字数是否接近 length_budget（±30% 可接受）？
 4. **语言规范性(language_quality)**: 学术语言使用是否规范，表达是否清晰？
 5. **逻辑连贯性(logical_coherence)**: 段落之间逻辑是否连贯，论证链条是否完整？
-6. **整体关联性(outline_coherence)**: 本节内容是否与提纲中其他节的 section_goal 保持互补（不重复也不遗漏）？
+6. **整体关联性(outline_coherence)**: 本节内容是否与提纲中**同级**兄弟节的 section_goal 保持互补（不重复也不遗漏）？
+   **【父子节层级说明（必须遵守）】**: 如果 `has_sub_sections = true`，本节是父节，其子节将展开细节，因此父节写作为概述/总领，内容与子节有部分重叠是正常的层级结构，**不得**因此扣分或判定为 `outline_overlap`。仅当**同级兄弟节**（如 "2.1" 与 "2.2" 之间，或 "2" 与 "3" 之间）存在实质性重复论点时，才视为 `outline_overlap` 问题。
 
 **评分标准（每维度 0-10 分）：**
 - 8-10: 优秀，基本无需修改
@@ -38,6 +40,7 @@ compressed_context.current_section_spec 包含：
 **通过标准：**
 - overall_score >= 6 且无严重问题（goal_fulfillment >= 5 且 argument_coverage >= 5）→ passed: true
 - 否则 → passed: false
+- **父节（has_sub_sections = true）特殊标准**：篇幅短于叶节点属正常现象（子节承载详细内容），`length_adequacy` 和 `argument_coverage` 应据此宽松评判；整体概述到位即可通过。
 
 **输出格式（必须是可直接被 json.loads() 解析的合法 JSON，不加任何代码块标记）：**
 

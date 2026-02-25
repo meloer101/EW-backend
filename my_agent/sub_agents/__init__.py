@@ -9,6 +9,7 @@ from .reviser_agent.agent import reviser_agent
 from .consistency_reviser_agent.agent import consistency_reviser_agent
 from .local_patcher_agent.agent import local_patcher_agent
 from .formatter_agent.agent import formatter_agent
+from .email_agent.agent import email_agent
 
 __all__ = [
     "intake_agent",
@@ -20,4 +21,5 @@ __all__ = [
     "consistency_reviser_agent",
     "local_patcher_agent",
     "formatter_agent",
+    "email_agent",
 ]

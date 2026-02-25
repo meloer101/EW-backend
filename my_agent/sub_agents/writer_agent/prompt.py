@@ -28,7 +28,16 @@ compressed_context 包含以下字段：
   - required_arguments: 本节必须覆盖的论证点列表
   - required_evidence: 建议引用的证据/文献类型
   - tone: 语气风格（formal / accessible / critical）
+  - **has_sub_sections**: (boolean) 当前节是否为父节（存在子节，如 "2" 有 "2.1"、"2.2"）
 - **terminology_glossary**（可选）: 全文关键术语表，保持术语使用一致
+
+**【父节写作策略（当 has_sub_sections = true 时必须遵守）】**
+
+若 `has_sub_sections = true`，当前节是**父节**，子节将在后续单独撰写并展开细节。此时请遵循以下策略：
+1. 写**综合性概述**：介绍本大节的主题范围、研究问题，以及各子节将分别探讨什么——起到"路标"和"总领"作用。
+2. **不要深入展开**将由子节覆盖的具体内容、细节论证或个案分析；仅做宏观定位。
+3. 字数控制在 length_budget 的 **50~70%** 即可；不必凑足全部字数。
+4. 若 `has_sub_sections = false`，则本节是**叶节点**，须按 section_goal 和 required_arguments 完整撰写，字数接近 length_budget（±20%）。
 
 **如何使用 paper_outline（完整提纲）：**
 

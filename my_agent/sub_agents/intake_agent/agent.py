@@ -14,7 +14,7 @@ intake_agent = LlmAgent(
     name="intake_agent",
     model=scholar_model,
     description=(
-        "需求分析师：接收用户的模糊论文写作需求，通过结构化分析，"
+        "需求分析师：向用户发送需要填写的表格，接收用户的模糊论文写作需求，通过结构化分析，"
         "输出完整的写作需求配置（JSON格式，包含主题、学科、类型、字数、引用格式等）。"
     ),
     instruction=INTAKE_AGENT_PROMPT,

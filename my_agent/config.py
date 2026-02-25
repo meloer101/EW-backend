@@ -21,3 +21,6 @@ scholar_model = LiteLlm(
 # 应用常量
 # ──────────────────────────────────────────────
 APP_NAME = "scholar_flow"
+
+# AgentMail 邮件发送（email_agent）：在 .env 中配置
+# AGENTMAIL_API_KEY - 必填；AGENTMAIL_INBOX_ID - 发件箱地址，可选，默认 m@agentmail.to

@@ -22,6 +22,7 @@ from .sub_agents.planner_agent.agent import planner_agent
 from .sub_agents.knowledge_agent.agent import knowledge_agent
 from .sub_agents.reviser_agent.agent import reviser_agent
 from .sub_agents.formatter_agent.agent import formatter_agent
+from .sub_agents.email_agent.agent import email_agent
 from .workflow_agents.pipelines import writing_pipeline, consistency_pipeline
 
 
@@ -46,6 +47,7 @@ scholar_flow_coordinator = LlmAgent(
         AgentTool(agent=consistency_pipeline),
         AgentTool(agent=reviser_agent),
         AgentTool(agent=formatter_agent),
+        AgentTool(agent=email_agent),
     ],
 )
 
